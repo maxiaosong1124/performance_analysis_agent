@@ -829,5 +829,676 @@ TEST_CASE("RingBuffer concurrent access", "[ring_buffer][concurrent]") {
 
 ---
 
-*架构设计版本：v1.0*
-*最后更新：2026-02-15*
+---
+
+## 🔌 扩展模块：外部工具集成 (External Tools)
+
+> 本模块作为**核心学习功能**的补充，允许智能体无缝集成现有的专业性能分析工具。
+> 设计目标：不替代核心学习，而是增强生产环境的实用性。
+
+### 架构定位
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           外部工具集成层 (external/)                          │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                      External Tool Interface                          │   │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐  │   │
+│  │  │ PerfTool │  │ NcuTool  │  │ VtuneTool│  │ BpftraceTool         │  │   │
+│  │  │ Adapter  │  │ Adapter  │  │ Adapter  │  │ Adapter              │  │   │
+│  │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └──────────┬───────────┘  │   │
+│  │       │             │             │                    │              │   │
+│  │       └─────────────┴─────────────┴────────────────────┘              │   │
+│  │                              │                                         │   │
+│  │                    ┌─────────┴─────────┐                               │   │
+│  │                    │   Unified Model   │  ← 统一数据模型               │   │
+│  │                    │   (跨工具通用)     │                               │   │
+│  │                    └─────────┬─────────┘                               │   │
+│  └──────────────────────────────┼────────────────────────────────────────┘   │
+│                                 │                                            │
+│                    ┌────────────┴────────────┐                               │
+│                    ▼                         ▼                               │
+│         ┌─────────────────┐      ┌─────────────────────┐                     │
+│         │  ToolOrchestrator│      │  ExternalAIBridge   │                     │
+│         │  (工具编排器)     │      │  (AI桥接)            │                     │
+│         └─────────────────┘      └─────────────────────┘                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 目录结构
+
+```
+src/
+├── ... (核心模块)
+│
+└── external/                          # 外部工具集成（可选编译）
+    ├── base/                          # 基础接口
+    │   ├── external_tool.hpp          # 外部工具基类
+    │   ├── tool_adapter.hpp           # 适配器接口
+    │   ├── tool_config.hpp            # 工具配置
+    │   └── data_converter.hpp         # 数据转换接口
+    │
+    ├── adapters/                      # 具体工具适配器
+    │   ├── perf/                      # Linux perf
+    │   │   ├── perf_adapter.hpp
+    │   │   ├── perf_adapter.cpp
+    │   │   ├── perf_data_parser.hpp   # perf.data解析
+    │   │   ├── perf_script_parser.hpp # perf script解析
+    │   │   └── perf_events.hpp        # perf事件定义
+    │   │
+    │   ├── nvidia/                    # NVIDIA工具
+    │   │   ├── ncu_adapter.hpp        # Nsight Compute
+    │   │   ├── ncu_adapter.cpp
+    │   │   ├── nsys_adapter.hpp       # Nsight Systems
+    │   │   ├── nsys_adapter.cpp
+    │   │   ├── ncu_csv_parser.hpp     # NCU CSV解析
+    │   │   └── nsys_sqlite_parser.hpp # NSYS SQLite解析
+    │   │
+    │   ├── intel/                     # Intel工具
+    │   │   ├── vtune_adapter.hpp
+    │   │   └── vtune_adapter.cpp
+    │   │
+    │   ├── bpftrace/                  # bpftrace
+    │   │   ├── bpftrace_adapter.hpp
+    │   │   └── bpftrace_adapter.cpp
+    │   │
+    │   └── valgrind/                  # Valgrind
+    │       ├── valgrind_adapter.hpp
+    │       └── massif_parser.hpp
+    │
+    ├── unified/                       # 统一数据模型
+    │   ├── unified_profile.hpp        # 统一Profile数据
+    │   ├── unified_trace.hpp          # 统一Trace数据
+    │   ├── unified_metrics.hpp        # 统一Metrics数据
+    │   └── unified_report.hpp         # 统一报告格式
+    │
+    ├── orchestrator/                  # 工具编排
+    │   ├── tool_orchestrator.hpp      # 多工具协调
+    │   ├── pipeline_builder.hpp       # 分析流水线
+    │   ├── dependency_graph.hpp       # 工具依赖管理
+    │   └── result_merger.hpp          # 结果合并
+    │
+    └── ai_bridge/                     # AI模块桥接
+        ├── external_data_bridge.hpp   # 数据转换桥
+        └── tool_recommender.hpp       # 工具推荐
+```
+
+### 核心接口设计
+
+#### 1. 外部工具基类
+
+```cpp
+// external/base/external_tool.hpp
+#pragma once
+#include <string>
+#include <vector>
+#include <optional>
+#include "common/result.hpp"
+#include "external/unified/unified_profile.hpp"
+
+namespace perf::external {
+
+// 工具能力描述
+struct ToolCapabilities {
+    bool supports_cpu_profiling{false};
+    bool supports_gpu_profiling{false};
+    bool supports_memory_profiling{false};
+    bool supports_io_profiling{false};
+    bool supports_network_profiling{false};
+    bool supports_system_wide{false};
+    bool supports_attach_process{false};
+    bool supports_attach_thread{false};
+    std::vector<std::string> supported_architectures;
+    std::vector<std::string> required_kernel_features;
+};
+
+// 工具执行配置
+struct ToolExecutionConfig {
+    std::string target_binary;           // 目标程序
+    std::vector<std::string> target_args; // 目标程序参数
+    std::optional<pid_t> attach_pid;     // 附加进程
+    std::chrono::seconds duration{10};   // 采样时长
+    std::string output_dir{"./perf_data"}; // 输出目录
+    std::vector<std::string> extra_args; // 额外参数
+};
+
+// 外部工具接口
+class ExternalTool {
+public:
+    virtual ~ExternalTool() = default;
+    
+    // 工具元信息
+    virtual const char* name() const = 0;
+    virtual const char* version() const = 0;
+    virtual ToolCapabilities capabilities() const = 0;
+    
+    // 可用性检查
+    virtual bool isAvailable() const = 0;
+    virtual common::Result<void> checkRequirements() = 0;
+    
+    // 执行采集
+    virtual common::Result<void> execute(const ToolExecutionConfig& config) = 0;
+    
+    // 停止采集
+    virtual common::Result<void> stop() = 0;
+    
+    // 获取原始输出路径
+    virtual std::vector<std::string> getOutputFiles() const = 0;
+    
+    // 转换为统一数据模型（核心方法）
+    virtual common::Result<unified::UnifiedProfile> toUnifiedProfile() = 0;
+    virtual common::Result<unified::UnifiedTrace> toUnifiedTrace() = 0;
+    virtual common::Result<unified::UnifiedMetrics> toUnifiedMetrics() = 0;
+    
+protected:
+    ExternalTool() = default;
+};
+
+// 工具工厂
+class ExternalToolFactory {
+public:
+    using ToolCreator = std::function<std::unique_ptr<ExternalTool>()>;
+    
+    static ExternalToolFactory& instance();
+    
+    void registerTool(const std::string& name, ToolCreator creator);
+    std::unique_ptr<ExternalTool> createTool(const std::string& name);
+    std::vector<std::string> availableTools() const;
+    
+private:
+    ExternalToolFactory() = default;
+    std::unordered_map<std::string, ToolCreator> creators_;
+};
+
+} // namespace perf::external
+```
+
+#### 2. perf适配器实现
+
+```cpp
+// external/adapters/perf/perf_adapter.hpp
+#pragma once
+#include "external/base/external_tool.hpp"
+
+namespace perf::external {
+
+// perf特有配置
+struct PerfConfig {
+    enum class EventType {
+        CPU_CYCLES,
+        INSTRUCTIONS,
+        CACHE_MISSES,
+        BRANCH_MISSES,
+        CONTEXT_SWITCHES,
+        CUSTOM
+    };
+    
+    std::vector<EventType> events{EventType::CPU_CYCLES, EventType::INSTRUCTIONS};
+    std::string custom_event;    // 自定义perf事件
+    uint32_t sample_freq{99};    // 采样频率(Hz)
+    bool call_graph{true};       // 记录调用栈
+    uint32_t stack_size{8192};   // 栈大小
+    bool kernel_space{true};     // 包含内核态
+    bool user_space{true};       // 包含用户态
+};
+
+class PerfAdapter : public ExternalTool {
+public:
+    explicit PerfAdapter(const PerfConfig& config = {});
+    ~PerfAdapter() override;
+    
+    // ExternalTool接口实现
+    const char* name() const override { return "perf"; }
+    const char* version() const override;
+    ToolCapabilities capabilities() const override;
+    bool isAvailable() const override;
+    common::Result<void> checkRequirements() override;
+    common::Result<void> execute(const ToolExecutionConfig& config) override;
+    common::Result<void> stop() override;
+    std::vector<std::string> getOutputFiles() const override;
+    
+    // 数据转换
+    common::Result<unified::UnifiedProfile> toUnifiedProfile() override;
+    common::Result<unified::UnifiedTrace> toUnifiedTrace() override;
+    common::Result<unified::UnifiedMetrics> toUnifiedMetrics() override;
+    
+    // perf特有功能
+    common::Result<void> report(const std::string& perf_data_path);
+    common::Result<std::string> annotate(const std::string& symbol);
+    
+private:
+    class Impl;
+    std::unique_ptr<Impl> pimpl_;
+    PerfConfig perf_config_;
+    ToolExecutionConfig exec_config_;
+    pid_t perf_pid_{-1};
+};
+
+} // namespace perf::external
+```
+
+#### 3. NVIDIA Nsight Compute适配器
+
+```cpp
+// external/adapters/nvidia/ncu_adapter.hpp
+#pragma once
+#include "external/base/external_tool.hpp"
+
+namespace perf::external {
+
+// NCU特有配置
+struct NcuConfig {
+    std::vector<std::string> metrics;    // 采集的指标
+    std::string kernel_regex;            // 内核名称过滤
+    uint32_t kernel_count{10};           // 分析前N个内核
+    bool replay_mode{true};              // 使用kernel replay
+    bool import_source{true};            // 导入CUDA源码
+    std::vector<std::string> sections;   // 采集的section
+};
+
+class NcuAdapter : public ExternalTool {
+public:
+    explicit NcuAdapter(const NcuConfig& config = {});
+    ~NcuAdapter() override;
+    
+    // ExternalTool接口实现
+    const char* name() const override { return "ncu"; }
+    const char* version() const override;
+    ToolCapabilities capabilities() const override;
+    bool isAvailable() const override;
+    common::Result<void> checkRequirements() override;
+    common::Result<void> execute(const ToolExecutionConfig& config) override;
+    common::Result<void> stop() override;
+    std::vector<std::string> getOutputFiles() const override;
+    
+    // 数据转换
+    common::Result<unified::UnifiedProfile> toUnifiedProfile() override;
+    common::Result<unified::UnifiedTrace> toUnifiedTrace() override;
+    common::Result<unified::UnifiedMetrics> toUnifiedMetrics() override;
+    
+    // NCU特有功能
+    common::Result<void> exportToCSV(const std::string& output_path);
+    common::Result<std::vector<NcuKernelMetrics>> parseKernelMetrics();
+    
+private:
+    class Impl;
+    std::unique_ptr<Impl> pimpl_;
+    NcuConfig ncu_config_;
+};
+
+// NCU内核指标结构
+struct NcuKernelMetrics {
+    std::string kernel_name;
+    uint32_t grid_size;
+    uint32_t block_size;
+    std::chrono::nanoseconds duration;
+    std::unordered_map<std::string, double> metrics;  // 如: sm_efficiency, memory_throughput
+};
+
+} // namespace perf::external
+```
+
+#### 4. 统一数据模型
+
+```cpp
+// external/unified/unified_profile.hpp
+#pragma once
+#include <string>
+#include <vector>
+#include <map>
+#include <chrono>
+
+namespace perf::external::unified {
+
+// 统一的采样数据
+struct Sample {
+    std::chrono::nanoseconds timestamp;
+    uint64_t thread_id;
+    uint64_t process_id;
+    std::vector<std::string> stack;      // 调用栈（函数名）
+    std::map<std::string, double> counters; // 计数器值
+};
+
+// 统一的函数统计
+struct FunctionStat {
+    std::string name;
+    std::string module;
+    uint64_t address;
+    std::chrono::nanoseconds self_time;
+    std::chrono::nanoseconds total_time;
+    uint64_t sample_count{0};
+    double percentage{0.0};
+};
+
+// 统一Profile数据结构
+struct UnifiedProfile {
+    std::string tool_name;               // 来源工具
+    std::string tool_version;
+    std::chrono::system_clock::time_point start_time;
+    std::chrono::nanoseconds duration;
+    
+    std::vector<Sample> samples;
+    std::vector<FunctionStat> functions;
+    
+    // 原始工具特定数据（保留用于高级分析）
+    std::map<std::string, std::string> raw_metadata;
+    std::vector<std::string> raw_files;
+};
+
+// 统一Trace数据结构
+struct UnifiedTrace {
+    struct Event {
+        enum Type { FUNCTION_ENTRY, FUNCTION_EXIT, SCHEDULE, IO, CUSTOM };
+        Type type;
+        std::chrono::nanoseconds timestamp;
+        uint64_t thread_id;
+        std::string name;
+        std::map<std::string, std::string> attributes;
+    };
+    
+    std::vector<Event> events;
+    std::string tool_name;
+};
+
+// 统一Metrics数据结构
+struct UnifiedMetrics {
+    struct Metric {
+        std::string name;
+        std::string unit;
+        double value;
+        std::optional<double> min;
+        std::optional<double> max;
+        std::optional<double> avg;
+    };
+    
+    std::vector<Metric> metrics;
+    std::chrono::system_clock::time_point timestamp;
+    std::string tool_name;
+};
+
+} // namespace perf::external::unified
+```
+
+#### 5. 工具编排器
+
+```cpp
+// external/orchestrator/tool_orchestrator.hpp
+#pragma once
+#include "external/base/external_tool.hpp"
+#include "external/unified/unified_report.hpp"
+
+namespace perf::external {
+
+// 分析场景定义
+enum class AnalysisScenario {
+    CPU_BOUND,           // CPU密集型
+    MEMORY_BOUND,        // 内存密集型
+    IO_BOUND,            // IO密集型
+    GPU_CUDA,            // CUDA GPU分析
+    GPU_ROCM,            // ROCm GPU分析
+    SYSTEM_WIDE,         // 全系统分析
+    NETWORK_LATENCY,     // 网络延迟
+    CUSTOM
+};
+
+// 工具链配置
+struct ToolChainConfig {
+    AnalysisScenario scenario;
+    bool parallel_execution{false};      // 并行执行多个工具
+    std::chrono::seconds timeout{60};
+    std::vector<std::string> tool_order; // 指定工具执行顺序
+};
+
+// 工具编排器
+class ToolOrchestrator {
+public:
+    ToolOrchestrator();
+    ~ToolOrchestrator();
+    
+    // 注册工具
+    void registerTool(std::unique_ptr<ExternalTool> tool);
+    
+    // 基于场景自动选择工具
+    std::vector<std::string> recommendTools(AnalysisScenario scenario);
+    
+    // 执行工具链
+    common::Result<void> executeToolChain(
+        const ToolChainConfig& config,
+        const ToolExecutionConfig& exec_config
+    );
+    
+    // 获取统一报告
+    common::Result<unified::UnifiedReport> generateUnifiedReport();
+    
+    // 获取各工具结果
+    std::map<std::string, unified::UnifiedProfile> getAllProfiles() const;
+    std::map<std::string, unified::UnifiedMetrics> getAllMetrics() const;
+    
+private:
+    class Impl;
+    std::unique_ptr<Impl> pimpl_;
+};
+
+} // namespace perf::external
+```
+
+#### 6. AI桥接模块
+
+```cpp
+// external/ai_bridge/external_data_bridge.hpp
+#pragma once
+#include "external/unified/unified_report.hpp"
+#include "ai/diagnosis/ai_diagnoser.hpp"
+
+namespace perf::external {
+
+// 外部数据AI桥接
+class ExternalDataBridge {
+public:
+    ExternalDataBridge();
+    ~ExternalDataBridge();
+    
+    // 将统一报告转换为AI可理解的提示
+    std::string toAnalysisPrompt(const unified::UnifiedReport& report);
+    
+    // 增强AI诊断上下文
+    void enrichDiagnosisContext(
+        ai::DiagnosisContext& context,
+        const unified::UnifiedReport& report
+    );
+    
+    // 生成工具使用建议
+    std::string generateToolRecommendationPrompt(AnalysisScenario scenario);
+    
+    // 关联多工具结果
+    std::string correlateToolResults(
+        const std::map<std::string, unified::UnifiedReport>& reports
+    );
+};
+
+// 工具推荐器
+class ToolRecommender {
+public:
+    struct Recommendation {
+        std::string tool_name;
+        std::string reason;
+        int priority;  // 1-10
+        std::vector<std::string> prerequisites;
+    };
+    
+    // 基于场景推荐
+    std::vector<Recommendation> recommend(AnalysisScenario scenario);
+    
+    // 基于目标推荐（如："查找内存泄漏"、"优化CUDA内核"）
+    std::vector<Recommendation> recommendByGoal(const std::string& goal);
+    
+    // 推荐工具组合
+    std::vector<std::vector<std::string>> recommendCombinations(
+        AnalysisScenario scenario
+    );
+};
+
+} // namespace perf::external
+```
+
+### 使用示例
+
+```cpp
+// 示例1：使用perf进行CPU分析
+#include "external/adapters/perf/perf_adapter.hpp"
+
+void analyze_cpu() {
+    perf::external::PerfConfig config;
+    config.events = {perf::external::PerfConfig::EventType::CPU_CYCLES,
+                     perf::external::PerfConfig::EventType::CACHE_MISSES};
+    config.call_graph = true;
+    
+    auto perf = std::make_unique<perf::external::PerfAdapter>(config);
+    
+    if (!perf->isAvailable()) {
+        std::cerr << "perf not available" << std::endl;
+        return;
+    }
+    
+    perf::external::ToolExecutionConfig exec;
+    exec.target_binary = "./my_app";
+    exec.target_args = {"--input", "data.txt"};
+    exec.duration = std::chrono::seconds(30);
+    
+    auto result = perf->execute(exec);
+    if (result.ok()) {
+        auto profile = perf->toUnifiedProfile();
+        // 交给AI分析...
+    }
+}
+
+// 示例2：工具编排器自动分析
+#include "external/orchestrator/tool_orchestrator.hpp"
+
+void auto_analyze() {
+    perf::external::ToolOrchestrator orchestrator;
+    
+    // 注册可用工具
+    orchestrator.registerTool(std::make_unique<perf::external::PerfAdapter>());
+    orchestrator.registerTool(std::make_unique<perf::external::NcuAdapter>());
+    
+    // 自动推荐工具
+    auto tools = orchestrator.recommendTools(
+        perf::external::AnalysisScenario::GPU_CUDA
+    );
+    // tools: ["ncu", "perf"]
+    
+    // 执行工具链
+    perf::external::ToolChainConfig chain;
+    chain.scenario = perf::external::AnalysisScenario::GPU_CUDA;
+    chain.parallel_execution = false;
+    
+    perf::external::ToolExecutionConfig exec;
+    exec.target_binary = "./cuda_app";
+    exec.duration = std::chrono::seconds(60);
+    
+    orchestrator.executeToolChain(chain, exec);
+    
+    // 生成统一报告
+    auto report = orchestrator.generateUnifiedReport();
+}
+```
+
+### 与核心模块集成点
+
+```cpp
+// application/use_cases/external_analysis.hpp
+#pragma once
+#include "external/orchestrator/tool_orchestrator.hpp"
+#include "ai/diagnosis/ai_diagnoser.hpp"
+
+namespace perf::application {
+
+// 外部工具分析用例
+class ExternalAnalysisUseCase {
+public:
+    explicit ExternalAnalysisUseCase(
+        std::unique_ptr<external::ToolOrchestrator> orchestrator,
+        std::unique_ptr<ai::AIDiagnoser> diagnoser
+    );
+    
+    // 主入口：执行外部工具分析
+    common::Result<AnalysisReport> analyze(
+        external::AnalysisScenario scenario,
+        const external::ToolExecutionConfig& config
+    );
+    
+    // 智能推荐分析方案
+    common::Result<AnalysisReport> smartAnalyze(
+        const std::string& target_binary,
+        const std::vector<std::string>& hints = {}
+    );
+    
+private:
+    std::unique_ptr<external::ToolOrchestrator> orchestrator_;
+    std::unique_ptr<ai::AIDiagnoser> diagnoser_;
+};
+
+} // namespace perf::application
+```
+
+### CMake配置（可选编译）
+
+```cmake
+# external/CMakeLists.txt
+option(ENABLE_EXTERNAL_TOOLS "Enable external tool integrations" ON)
+option(ENABLE_PERF_ADAPTER "Enable Linux perf adapter" ON)
+option(ENABLE_NVIDIA_ADAPTERS "Enable NVIDIA tool adapters" ON)
+option(ENABLE_INTEL_ADAPTERS "Enable Intel tool adapters" OFF)
+
+if(ENABLE_EXTERNAL_TOOLS)
+    add_library(perf_agent_external STATIC)
+    
+    # 基础模块
+    target_sources(perf_agent_external PRIVATE
+        base/external_tool.cpp
+        base/tool_adapter.cpp
+        unified/unified_profile.cpp
+        unified/unified_metrics.cpp
+        orchestrator/tool_orchestrator.cpp
+        ai_bridge/external_data_bridge.cpp
+    )
+    
+    # 条件编译适配器
+    if(ENABLE_PERF_ADAPTER)
+        find_program(PERF_EXE perf)
+        if(PERF_EXE)
+            target_sources(perf_agent_external PRIVATE
+                adapters/perf/perf_adapter.cpp
+                adapters/perf/perf_data_parser.cpp
+            )
+            target_compile_definitions(perf_agent_external PRIVATE HAS_PERF=1)
+        endif()
+    endif()
+    
+    if(ENABLE_NVIDIA_ADAPTERS)
+        find_program(NCU_EXE ncu)
+        find_program(NSYS_EXE nsys)
+        if(NCU_EXE OR NSYS_EXE)
+            target_sources(perf_agent_external PRIVATE
+                adapters/nvidia/ncu_adapter.cpp
+                adapters/nvidia/nsys_adapter.cpp
+            )
+        endif()
+        if(NCU_EXE)
+            target_compile_definitions(perf_agent_external PRIVATE HAS_NCU=1)
+        endif()
+        if(NSYS_EXE)
+            target_compile_definitions(perf_agent_external PRIVATE HAS_NSYS=1)
+        endif()
+    endif()
+    
+    target_link_libraries(perf_agent_external PUBLIC perf_agent_core)
+endif()
+```
+
+---
+
+*架构设计版本：v1.0*  
+*外部工具集成模块：v0.1*  
+*最后更新：2026-02-16*

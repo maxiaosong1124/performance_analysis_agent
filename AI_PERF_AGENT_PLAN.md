@@ -140,7 +140,7 @@ Linux内核源码关键路径：
 
 ```
 ai-perf-agent/
-├── core/                          # 核心性能采集引擎
+├── core/                          # 核心性能采集引擎（从零实现）
 │   ├── procfs/                    # /proc解析模块
 │   ├── tracer/                    # 追踪引擎(kprobe/uprobe)
 │   ├── sampler/                   # 采样引擎
@@ -149,6 +149,23 @@ ai-perf-agent/
 │       ├── loader/                # eBPF程序加载器(基于libbpf)
 │       ├── programs/              # 自定义eBPF程序集合
 │       └── maps/                  # Maps读写封装
+│
+├── external/                      # 外部工具集成（生产环境增强）
+│   ├── adapters/                  # 工具适配器
+│   │   ├── perf/                  # Linux perf集成
+│   │   ├── nsight/                # NVIDIA Nsight Compute/Systems
+│   │   ├── vtune/                 # Intel VTune
+│   │   ├── bpftrace/              # bpftrace动态追踪
+│   │   └── valgrind/              # Valgrind/Massif
+│   ├── unified/                   # 统一数据模型
+│   │   ├── unified_profile.hpp
+│   │   ├── unified_trace.hpp
+│   │   └── unified_metrics.hpp
+│   ├── orchestrator/              # 工具编排器
+│   │   └── tool_orchestrator.hpp
+│   └── ai_bridge/                 # AI模块桥接
+│       └── external_data_bridge.hpp
+│
 ├── analysis/                      # 分析引擎
 │   ├── flamegraph/                # 火焰图生成
 │   ├── offcpu/                    # Off-CPU分析

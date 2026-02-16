@@ -21,11 +21,17 @@
 └─────────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────────┐
-│                      Analysis Layer                              │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │
-│  │ Flame    │  │ Off-CPU  │  │ Bottleneck│  │ Anomaly         │  │
-│  │ Graph    │  │ Analysis │  │ Detection │  │ Detection       │  │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────────────┘  │
+│  ┌─────────────────────────────┐  ┌───────────────────────────┐ │
+│  │      Analysis Layer         │  │ External Tool Integration │ │
+│  │  ┌──────────┐  ┌──────────┐ │  │  ┌──────────┐  ┌────────┐ │ │
+│  │  │ Flame    │  │ Off-CPU  │ │  │  │ Perf     │  │ NCU    │ │ │
+│  │  │ Graph    │  │ Analysis │ │  │  │ Adapter  │  │ Adapter│ │ │
+│  │  └──────────┘  └──────────┘ │  │  └──────────┘  └────────┘ │ │
+│  │  ┌──────────┐  ┌──────────┐ │  │  ┌──────────┐  ┌────────┐ │ │
+│  │  │Bottleneck│  │ Anomaly  │ │  │  │ VTune    │  │Bpftrace│ │ │
+│  │  │Detection │  │Detection │ │  │  │ Adapter  │  │Adapter │ │ │
+│  │  └──────────┘  └──────────┘ │  │  └──────────┘  └────────┘ │ │
+│  └─────────────────────────────┘  └───────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────────┐
@@ -152,6 +158,26 @@ ai-perf-agent/
 ├── docs/                          # 文档
 │   ├── design/                    # 设计文档
 │   └── api/                       # API文档
+│
+├── external/                      # 外部工具集成层（可选编译）
+│   ├── base/                      # 基础接口
+│   │   ├── external_tool.hpp      # 外部工具基类
+│   │   ├── tool_adapter.hpp       # 适配器接口
+│   │   └── data_converter.hpp     # 数据转换接口
+│   ├── adapters/                  # 具体工具适配器
+│   │   ├── perf/                  # Linux perf
+│   │   ├── nvidia/                # NVIDIA NCU/NSYS
+│   │   ├── intel/                 # Intel VTune
+│   │   ├── bpftrace/              # bpftrace
+│   │   └── valgrind/              # Valgrind
+│   ├── unified/                   # 统一数据模型
+│   │   ├── unified_profile.hpp
+│   │   ├── unified_trace.hpp
+│   │   └── unified_metrics.hpp
+│   ├── orchestrator/              # 工具编排
+│   │   └── tool_orchestrator.hpp
+│   └── ai_bridge/                 # AI模块桥接
+│       └── external_data_bridge.hpp
 │
 └── third_party/                   # 第三方库（可选submodule）
     ├── fmt/                       # 格式化库（C++20前替代std::format）

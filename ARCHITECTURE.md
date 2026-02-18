@@ -71,15 +71,17 @@ ai-perf-agent/
 │   │   └── expected.hpp           # std::expected 兼容实现(C++23前)
 │   │
 │   ├── infrastructure/            # 基础设施层
-│   │   ├── ring_buffer/           # 无锁环形缓冲区
+│   │   ├── ring_buffer/           # 无锁环形缓冲区（高频数据路径）
 │   │   │   ├── ring_buffer.hpp
 │   │   │   └── ring_buffer.cpp
 │   │   ├── thread_pool/           # 线程池
 │   │   │   ├── thread_pool.hpp
 │   │   │   └── thread_pool.cpp
-│   │   ├── event_bus/             # 事件总线（观察者模式）
+│   │   ├── event_bus/             # 事件总线（仅用于控制事件，非高频数据）
 │   │   │   ├── event_bus.hpp
 │   │   │   └── event_bus.cpp
+│   │   ├── spsc_channel/          # 无锁单生产者单消费者通道（高频数据专用）
+│   │   │   └── spsc_channel.hpp
 │   │   └── logger/                # 日志系统
 │   │       ├── logger.hpp
 │   │       └── logger.cpp
@@ -89,6 +91,7 @@ ai-perf-agent/
 │   │   ├── procfs/                # /proc解析模块
 │   │   │   ├── procfs_reader.hpp
 │   │   │   ├── procfs_reader.cpp
+│   │   │   ├── container_reader.hpp  # cgroup v2容器感知
 │   │   │   ├── process_info.hpp   # 进程信息结构
 │   │   │   ├── cpu_info.hpp       # CPU信息结构
 │   │   │   └── memory_info.hpp    # 内存信息结构
@@ -100,15 +103,20 @@ ai-perf-agent/
 │   │   ├── sampler/               # 采样引擎
 │   │   │   ├── sampler.hpp
 │   │   │   ├── cpu_sampler.hpp    # CPU采样
-│   │   │   └── stack_walker.hpp   # 栈回溯
+│   │   │   └── stack_walker.hpp   # 栈回溯（frame pointer/DWARF/ORC）
 │   │   └── ebpf/                  # eBPF封装层
 │   │       ├── ebpf_loader.hpp    # eBPF程序加载器
 │   │       ├── ebpf_loader.cpp
+│   │       ├── ebpf_compat.hpp    # 内核版本兼容层
 │   │       ├── ebpf_program.hpp   # eBPF程序封装
 │   │       ├── bpf_helpers.h      # BPF辅助函数
-│   │       └── programs/          # eBPF程序源码
+│   │       └── programs/          # eBPF程序源码（CO-RE兼容）
 │   │           ├── cpu_profile.bpf.c
-│   │           └── off_cpu.bpf.c
+│   │           ├── off_cpu.bpf.c
+│   │           ├── tcp_latency.bpf.c
+│   │           ├── disk_io_latency.bpf.c
+│   │           ├── lock_contention.bpf.c
+│   │           └── sched_latency.bpf.c
 │   │
 │   ├── analyzer/                  # 分析引擎层
 │   │   ├── base_analyzer.hpp      # 分析器接口基类
@@ -119,26 +127,68 @@ ai-perf-agent/
 │   │   ├── off_cpu/               # Off-CPU分析
 │   │   │   ├── off_cpu_analyzer.hpp
 │   │   │   └── off_cpu_analyzer.cpp
+│   │   ├── metrics/               # 时序指标存储与查询
+│   │   │   ├── time_series.hpp    # 时序数据结构（环形存储）
+│   │   │   └── metrics_store.hpp  # 指标查询接口
 │   │   ├── bottleneck/            # 瓶颈检测
 │   │   │   ├── bottleneck_analyzer.hpp
 │   │   │   └── rules/             # 检测规则
-│   │   └── anomaly/               # 异常检测
+│   │   └── anomaly/               # 统计异常检测
 │   │       ├── anomaly_detector.hpp
-│   │       └── statistical_model.hpp
+│   │       ├── statistical_model.hpp  # Z-score / EMA / CUSUM
+│   │       └── anomaly_event.hpp
 │   │
-│   ├── ai/                        # AI模块（可选）
+│   ├── ai/                        # AI智能体模块（核心差异化）
+│   │   ├── agent/                 # ReAct Agent Loop
+│   │   │   ├── react_agent.hpp
+│   │   │   ├── react_agent.cpp
+│   │   │   ├── agent_state.hpp    # Agent状态机
+│   │   │   └── agent_config.hpp   # Agent运行参数
+│   │   ├── tools/                 # Tool Calling定义与实现
+│   │   │   ├── tool_registry.hpp  # 工具注册中心
+│   │   │   ├── tool_definition.hpp # 工具JSON Schema
+│   │   │   └── impls/             # 具体工具实现
+│   │   │       ├── system_tools.hpp    # list_processes / get_topology
+│   │   │       ├── profiler_tools.hpp  # cpu_profile / off_cpu_analysis
+│   │   │       ├── ebpf_tools.hpp      # run_ebpf_analyzer
+│   │   │       ├── metrics_tools.hpp   # query_metrics_history
+│   │   │       ├── alert_tools.hpp     # get_anomaly_report / set_threshold
+│   │   │       ├── external_tools.hpp  # run_external_tool
+│   │   │       └── report_tools.hpp    # generate_diagnosis_report
 │   │   ├── llm_client/            # LLM客户端
-│   │   │   ├── llm_client.hpp
-│   │   │   └── openai_client.hpp
-│   │   ├── prompt_builder/        # Prompt构建
-│   │   │   └── prompt_builder.hpp
-│   │   └── diagnosis/             # 智能诊断
-│   │       └── ai_diagnoser.hpp
+│   │   │   ├── llm_client.hpp     # 抽象接口（支持多后端）
+│   │   │   ├── openai_client.hpp  # OpenAI GPT-4 with function calling
+│   │   │   ├── anthropic_client.hpp # Claude API with tool use
+│   │   │   └── message.hpp        # 消息结构（role/content/tool_calls）
+│   │   ├── prompt_builder/        # Prompt工程
+│   │   │   ├── prompt_builder.hpp
+│   │   │   ├── data_formatter.hpp # 性能数据→LLM友好格式
+│   │   │   └── templates/         # Prompt模板
+│   │   │       ├── system_prompt.hpp
+│   │   │       └── analysis_templates.hpp
+│   │   ├── context/               # Context Window管理
+│   │   │   ├── context_manager.hpp  # Token预算管理
+│   │   │   ├── summarizer.hpp       # 大数据压缩摘要
+│   │   │   └── tool_cache.hpp       # 工具结果缓存(60s TTL)
+│   │   ├── diagnosis/             # 诊断输出
+│   │   │   ├── ai_diagnoser.hpp
+│   │   │   ├── diagnosis_report.hpp  # 结构化诊断结果
+│   │   │   └── knowledge_base.hpp    # 性能模式知识库
+│   │   └── alert/                 # 异常告警与自动触发
+│   │       ├── alert_manager.hpp  # 告警去重/聚合/路由
+│   │       ├── alert_trigger.hpp  # 触发Agent自动分析
+│   │       └── notification_sink.hpp # Webhook/文件输出
+│   │
+│   ├── config/                    # 配置管理
+│   │   ├── config_manager.hpp     # YAML配置加载与热重载
+│   │   ├── config_manager.cpp
+│   │   └── agent_config.hpp       # 全局配置结构体
 │   │
 │   ├── application/               # 应用层
 │   │   ├── use_cases/             # 用例
 │   │   │   ├── system_overview.hpp
 │   │   │   ├── process_analysis.hpp
+│   │   │   ├── ai_analysis.hpp    # AI自主分析用例
 │   │   │   └── performance_report.hpp
 │   │   └── orchestrator.hpp       # 工作流编排
 │   │
@@ -407,6 +457,21 @@ private:
 
 ### 5. 事件驱动架构
 
+> **设计决策：双通道架构**
+>
+> `EventBus` 使用 `shared_mutex`，适合低频控制事件（如采集器启动/停止、配置变更、告警触发）。
+> **不要**用 EventBus 传递高频采样数据（如每秒数千个栈样本）——这会造成锁竞争瓶颈。
+>
+> 高频数据路径使用 `SPSCChannel`（无锁单生产者单消费者）直接传递给消费者：
+>
+> ```
+> 高频数据路径（采样数据）：
+>   Collector → SPSCChannel<SampleData> → Analyzer → RingBuffer<MetricPoint> → MetricsStore
+>
+> 低频控制路径（状态事件）：
+>   ConfigChange/AlertEvent/CollectorState → EventBus → 订阅者
+> ```
+
 ```cpp
 // infrastructure/event_bus/event_bus.hpp
 #pragma once
@@ -424,7 +489,7 @@ struct Event {
     virtual ~Event() = default;
 };
 
-// 类型安全的观察者模式
+// 类型安全的观察者模式（仅用于低频控制事件）
 class EventBus {
 public:
     using HandlerId = size_t;
@@ -483,9 +548,839 @@ private:
 } // namespace perf::infrastructure
 ```
 
+### 6. 高频数据无锁通道（SPSCChannel）
+
+```cpp
+// infrastructure/spsc_channel/spsc_channel.hpp
+#pragma once
+#include <atomic>
+#include <array>
+#include <optional>
+#include <type_traits>
+
+namespace perf::infrastructure {
+
+// 无锁单生产者单消费者通道
+// 适用于高频采样数据从Collector→Analyzer的传递
+template<typename T, size_t Capacity>
+class SPSCChannel {
+    static_assert((Capacity & (Capacity - 1)) == 0, "Capacity must be power of 2");
+    static_assert(std::is_trivially_copyable_v<T>);
+
+public:
+    // 生产者线程调用（无需同步）
+    bool push(const T& item) noexcept {
+        const auto tail = tail_.load(std::memory_order_relaxed);
+        const auto next = (tail + 1) & mask_;
+        if (next == head_.load(std::memory_order_acquire)) {
+            return false; // full
+        }
+        buffer_[tail] = item;
+        tail_.store(next, std::memory_order_release);
+        return true;
+    }
+
+    // 消费者线程调用（无需同步）
+    std::optional<T> pop() noexcept {
+        const auto head = head_.load(std::memory_order_relaxed);
+        if (head == tail_.load(std::memory_order_acquire)) {
+            return std::nullopt; // empty
+        }
+        T item = buffer_[head];
+        head_.store((head + 1) & mask_, std::memory_order_release);
+        return item;
+    }
+
+    bool empty() const noexcept {
+        return head_.load(std::memory_order_acquire) ==
+               tail_.load(std::memory_order_acquire);
+    }
+
+private:
+    static constexpr size_t mask_ = Capacity - 1;
+    alignas(64) std::atomic<size_t> head_{0};
+    alignas(64) std::atomic<size_t> tail_{0};
+    std::array<T, Capacity> buffer_{};
+};
+
+} // namespace perf::infrastructure
+```
+
 ---
 
-## 📦 关键技术选型
+## 🤖 AI智能体模块设计
+
+> 这是项目最核心的差异化模块，包含完整的 ReAct Agent Loop、Tool Calling、Context管理和告警流水线。
+
+### 整体架构
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                    AI智能体模块 (src/ai/)                  │
+│                                                          │
+│  ┌─────────────────────────────────────────────────┐     │
+│  │              ReAct Agent Loop                    │     │
+│  │   Observe → Think(LLM) → Act(Tool) → Observe    │     │
+│  └──────────────────┬──────────────────────────────┘     │
+│                     │                                    │
+│    ┌────────────────┼─────────────────┐                  │
+│    ▼                ▼                 ▼                  │
+│  ┌──────┐     ┌──────────┐     ┌──────────────┐          │
+│  │ LLM  │     │  Tool    │     │   Context    │          │
+│  │Client│     │ Registry │     │   Manager    │          │
+│  └──────┘     └──────────┘     └──────────────┘          │
+│       │             │                 │                  │
+│       │        ┌────┴────┐      ┌─────┴────┐             │
+│       │        │15个工具  │      │滑窗+压缩  │             │
+│       │        │实现      │      │+缓存      │             │
+│       │        └─────────┘      └──────────┘             │
+│       │                                                  │
+│  ┌────┴─────────────────────────────────────────┐        │
+│  │         Alert Pipeline（独立协程/线程）         │        │
+│  │  AnomalyDetector → AlertManager → AgentTrigger│        │
+│  └─────────────────────────────────────────────┘        │
+└──────────────────────────────────────────────────────────┘
+```
+
+### 1. ReAct Agent Loop
+
+```cpp
+// ai/agent/react_agent.hpp
+#pragma once
+#include "ai/llm_client/llm_client.hpp"
+#include "ai/tools/tool_registry.hpp"
+#include "ai/context/context_manager.hpp"
+#include "ai/diagnosis/diagnosis_report.hpp"
+
+namespace perf::ai {
+
+// Agent运行配置
+struct AgentConfig {
+    int max_iterations{20};           // 最大工具调用轮次
+    int token_budget{100000};         // Token总预算
+    float confidence_threshold{0.85f}; // 结论置信度阈值（超过则停止）
+    std::chrono::seconds timeout{300}; // 总超时
+    bool auto_start_on_alert{true};   // 异常告警时自动启动
+};
+
+// Agent执行状态
+enum class AgentStatus {
+    IDLE,
+    RUNNING,
+    COMPLETED,
+    FAILED,
+    TIMEOUT,
+    INTERRUPTED
+};
+
+class ReactAgent {
+public:
+    explicit ReactAgent(
+        std::shared_ptr<LlmClient> llm,
+        std::shared_ptr<ToolRegistry> tools,
+        std::shared_ptr<ContextManager> context,
+        AgentConfig config = {}
+    );
+
+    // 启动一次分析会话（阻塞直到完成）
+    common::Result<DiagnosisReport> analyze(const std::string& user_query);
+
+    // 异步启动（告警触发时使用）
+    void analyzeAsync(
+        const std::string& trigger_reason,
+        std::function<void(DiagnosisReport)> on_complete
+    );
+
+    AgentStatus status() const { return status_; }
+    void interrupt() { interrupted_ = true; }
+
+private:
+    // ReAct核心循环
+    DiagnosisReport runLoop(const std::string& query);
+
+    // 单步：LLM推理 + 工具调用
+    struct StepResult {
+        std::string thought;             // LLM的推理过程
+        std::optional<ToolCall> action;  // 决定调用的工具（无则结束）
+        std::string observation;         // 工具执行结果
+        bool should_stop{false};        // 是否应该结束循环
+    };
+    StepResult step();
+
+    std::shared_ptr<LlmClient> llm_;
+    std::shared_ptr<ToolRegistry> tools_;
+    std::shared_ptr<ContextManager> context_;
+    AgentConfig config_;
+    std::atomic<AgentStatus> status_{AgentStatus::IDLE};
+    std::atomic<bool> interrupted_{false};
+    int iteration_{0};
+};
+
+} // namespace perf::ai
+```
+
+### 2. LLM客户端（多后端抽象）
+
+```cpp
+// ai/llm_client/llm_client.hpp
+#pragma once
+#include <string>
+#include <vector>
+#include <functional>
+#include "common/result.hpp"
+
+namespace perf::ai {
+
+// 工具调用请求
+struct ToolCall {
+    std::string id;          // 工具调用ID（由LLM生成）
+    std::string name;        // 工具名称
+    std::string arguments;   // JSON格式参数
+};
+
+// 对话消息
+struct Message {
+    enum class Role { SYSTEM, USER, ASSISTANT, TOOL };
+    Role role;
+    std::string content;
+    std::vector<ToolCall> tool_calls;  // assistant角色可能包含工具调用
+    std::string tool_call_id;          // tool角色对应的调用ID
+};
+
+// LLM响应
+struct LlmResponse {
+    std::string content;              // 文本响应
+    std::vector<ToolCall> tool_calls; // 工具调用请求（Function Calling）
+    int prompt_tokens{0};
+    int completion_tokens{0};
+    bool stop{false};                 // 是否自然停止（无工具调用）
+};
+
+// 工具定义（JSON Schema格式）
+struct ToolDefinition {
+    std::string name;
+    std::string description;
+    std::string parameters_schema;  // JSON Schema字符串
+};
+
+// 抽象LLM接口（支持OpenAI/Claude等多后端）
+class LlmClient {
+public:
+    virtual ~LlmClient() = default;
+
+    // 同步调用（带工具列表）
+    virtual common::Result<LlmResponse> chat(
+        const std::vector<Message>& messages,
+        const std::vector<ToolDefinition>& tools = {}
+    ) = 0;
+
+    // 流式调用（实时输出，可选）
+    virtual void chatStream(
+        const std::vector<Message>& messages,
+        const std::vector<ToolDefinition>& tools,
+        std::function<void(const std::string& chunk)> on_chunk,
+        std::function<void(LlmResponse)> on_complete
+    ) = 0;
+
+    virtual const char* backendName() const = 0;
+
+protected:
+    LlmClient() = default;
+};
+
+} // namespace perf::ai
+```
+
+```cpp
+// ai/llm_client/openai_client.hpp
+#pragma once
+#include "llm_client.hpp"
+
+namespace perf::ai {
+
+struct OpenAIConfig {
+    std::string api_key;
+    std::string model{"gpt-4o"};
+    std::string base_url{"https://api.openai.com/v1"};
+    std::chrono::seconds timeout{60};
+    int max_retries{3};
+};
+
+class OpenAIClient : public LlmClient {
+public:
+    explicit OpenAIClient(OpenAIConfig config);
+    ~OpenAIClient() override;
+
+    common::Result<LlmResponse> chat(
+        const std::vector<Message>& messages,
+        const std::vector<ToolDefinition>& tools = {}
+    ) override;
+
+    void chatStream(
+        const std::vector<Message>& messages,
+        const std::vector<ToolDefinition>& tools,
+        std::function<void(const std::string&)> on_chunk,
+        std::function<void(LlmResponse)> on_complete
+    ) override;
+
+    const char* backendName() const override { return "openai"; }
+
+private:
+    // 将ToolDefinition序列化为OpenAI function calling格式
+    std::string serializeTools(const std::vector<ToolDefinition>& tools);
+    // HTTP POST（使用libcurl或内置简单实现）
+    common::Result<std::string> httpPost(const std::string& endpoint,
+                                          const std::string& body);
+
+    OpenAIConfig config_;
+    class Impl;
+    std::unique_ptr<Impl> pimpl_;
+};
+
+// Claude API客户端（Anthropic tool use格式）
+struct AnthropicConfig {
+    std::string api_key;
+    std::string model{"claude-opus-4-5"};
+    std::string base_url{"https://api.anthropic.com/v1"};
+    std::chrono::seconds timeout{60};
+};
+
+class AnthropicClient : public LlmClient {
+public:
+    explicit AnthropicClient(AnthropicConfig config);
+
+    common::Result<LlmResponse> chat(
+        const std::vector<Message>& messages,
+        const std::vector<ToolDefinition>& tools = {}
+    ) override;
+
+    void chatStream(
+        const std::vector<Message>& messages,
+        const std::vector<ToolDefinition>& tools,
+        std::function<void(const std::string&)> on_chunk,
+        std::function<void(LlmResponse)> on_complete
+    ) override;
+
+    const char* backendName() const override { return "anthropic"; }
+
+private:
+    AnthropicConfig config_;
+    class Impl;
+    std::unique_ptr<Impl> pimpl_;
+};
+
+} // namespace perf::ai
+```
+
+### 3. Tool Registry（工具注册与执行）
+
+```cpp
+// ai/tools/tool_registry.hpp
+#pragma once
+#include "tool_definition.hpp"
+#include "common/result.hpp"
+#include <functional>
+#include <map>
+#include <string>
+
+namespace perf::ai {
+
+// 工具执行函数类型：接收JSON参数字符串，返回JSON结果字符串
+using ToolHandler = std::function<common::Result<std::string>(const std::string& args_json)>;
+
+class ToolRegistry {
+public:
+    // 注册工具
+    void registerTool(ToolDefinition def, ToolHandler handler);
+
+    // 执行工具调用（Agent调用）
+    common::Result<std::string> execute(const ToolCall& call);
+
+    // 获取所有工具定义（发送给LLM）
+    std::vector<ToolDefinition> allDefinitions() const;
+
+    // 检查工具是否存在
+    bool hasTool(const std::string& name) const;
+
+private:
+    std::map<std::string, std::pair<ToolDefinition, ToolHandler>> tools_;
+};
+
+// 工厂函数：创建并注册所有性能分析工具
+// collector/analyzer等模块通过依赖注入传入
+std::shared_ptr<ToolRegistry> createDefaultToolRegistry(
+    std::shared_ptr<collector::ProcFsReader> procfs,
+    std::shared_ptr<collector::EbpfLoader> ebpf,
+    std::shared_ptr<analyzer::MetricsStore> metrics,
+    std::shared_ptr<analyzer::AnomalyDetector> anomaly,
+    std::shared_ptr<external::ToolOrchestrator> ext_tools
+);
+
+} // namespace perf::ai
+```
+
+### 4. Context Manager（上下文窗口管理）
+
+```cpp
+// ai/context/context_manager.hpp
+#pragma once
+#include "ai/llm_client/llm_client.hpp"
+#include <deque>
+
+namespace perf::ai {
+
+struct ContextConfig {
+    int max_history_turns{10};      // 保留最近N轮对话
+    int max_tool_result_tokens{2000}; // 单个工具结果最大token数
+    int token_budget{100000};       // 总token预算
+    int response_budget{4000};      // 为LLM响应预留的token数
+};
+
+class ContextManager {
+public:
+    explicit ContextManager(ContextConfig config = {});
+
+    // 添加对话轮次
+    void addMessage(Message msg);
+
+    // 添加工具执行结果（自动压缩超长结果）
+    void addToolResult(const std::string& tool_call_id,
+                       const std::string& result,
+                       const std::string& tool_name);
+
+    // 固定关键证据（不随历史滑动而删除）
+    void pinEvidence(const std::string& evidence);
+
+    // 获取当前上下文（用于LLM调用）
+    std::vector<Message> getContext() const;
+
+    // 当前已使用token估算
+    int estimatedTokens() const;
+
+    // 重置会话
+    void reset();
+
+private:
+    // 压缩工具结果（保留统计摘要）
+    std::string compressToolResult(const std::string& result,
+                                    const std::string& tool_name,
+                                    int max_tokens);
+
+    // 估算token数（简单近似：字符数/3）
+    static int estimateTokens(const std::string& text);
+
+    ContextConfig config_;
+    std::deque<Message> history_;      // 对话历史（滑动窗口）
+    std::vector<std::string> pinned_;  // 固定的关键证据
+    std::map<std::string, std::string> tool_cache_; // 工具结果缓存
+};
+
+} // namespace perf::ai
+```
+
+### 5. 告警与自动触发流水线
+
+```cpp
+// ai/alert/alert_manager.hpp
+#pragma once
+#include "analyzer/anomaly/anomaly_event.hpp"
+#include <functional>
+#include <string>
+
+namespace perf::ai {
+
+// 告警严重程度
+enum class AlertSeverity { LOW, MEDIUM, HIGH, CRITICAL };
+
+// 告警事件
+struct Alert {
+    AlertSeverity severity;
+    std::string metric_name;
+    double current_value;
+    double threshold;
+    std::string description;
+    std::chrono::system_clock::time_point timestamp;
+    bool auto_analyze{false};  // 是否自动触发Agent分析
+};
+
+// 告警处理器类型
+using AlertHandler = std::function<void(const Alert&)>;
+
+class AlertManager {
+public:
+    AlertManager();
+
+    // 从AnomalyDetector接收异常事件（去重+聚合）
+    void onAnomaly(const analyzer::AnomalyEvent& event);
+
+    // 订阅告警（Webhook/文件/Agent触发等）
+    void subscribe(AlertSeverity min_severity, AlertHandler handler);
+
+    // 设置自定义告警阈值
+    void setThreshold(const std::string& metric,
+                      double threshold,
+                      AlertSeverity severity,
+                      bool auto_analyze = true);
+
+    // 去重窗口（5秒内同一指标只告警一次）
+    void setDeduplicationWindow(std::chrono::seconds window);
+
+private:
+    struct AlertRule {
+        double threshold;
+        AlertSeverity severity;
+        bool auto_analyze;
+    };
+
+    std::map<std::string, AlertRule> rules_;
+    std::map<std::string, std::chrono::system_clock::time_point> last_alert_time_;
+    std::chrono::seconds dedup_window_{5};
+    std::vector<std::pair<AlertSeverity, AlertHandler>> handlers_;
+    mutable std::mutex mutex_;
+};
+
+} // namespace perf::ai
+```
+
+```cpp
+// ai/alert/alert_trigger.hpp
+#pragma once
+#include "alert_manager.hpp"
+#include "ai/agent/react_agent.hpp"
+#include "ai/alert/notification_sink.hpp"
+
+namespace perf::ai {
+
+// 告警驱动的Agent自动触发器
+class AlertTrigger {
+public:
+    AlertTrigger(
+        std::shared_ptr<AlertManager> alert_manager,
+        std::shared_ptr<ReactAgent> agent,
+        std::shared_ptr<NotificationSink> notify
+    );
+
+    // 注册到AlertManager，HIGH/CRITICAL告警时自动启动分析
+    void start();
+    void stop();
+
+private:
+    void onAlert(const Alert& alert);
+    std::string buildAnalysisQuery(const Alert& alert);
+
+    std::shared_ptr<AlertManager> alert_mgr_;
+    std::shared_ptr<ReactAgent> agent_;
+    std::shared_ptr<NotificationSink> notify_;
+    std::atomic<bool> running_{false};
+};
+
+} // namespace perf::ai
+```
+
+```cpp
+// ai/alert/notification_sink.hpp
+#pragma once
+#include "alert_manager.hpp"
+#include "ai/diagnosis/diagnosis_report.hpp"
+
+namespace perf::ai {
+
+// 通知输出接口（支持多种输出方式）
+class NotificationSink {
+public:
+    virtual ~NotificationSink() = default;
+    virtual void sendAlert(const Alert& alert) = 0;
+    virtual void sendDiagnosisReport(const DiagnosisReport& report) = 0;
+};
+
+// Webhook通知（POST JSON到指定URL）
+class WebhookNotificationSink : public NotificationSink {
+public:
+    explicit WebhookNotificationSink(const std::string& url);
+    void sendAlert(const Alert& alert) override;
+    void sendDiagnosisReport(const DiagnosisReport& report) override;
+private:
+    std::string url_;
+};
+
+// 文件输出（JSON Lines格式，可接Grafana/ELK）
+class FileNotificationSink : public NotificationSink {
+public:
+    explicit FileNotificationSink(const std::string& path);
+    void sendAlert(const Alert& alert) override;
+    void sendDiagnosisReport(const DiagnosisReport& report) override;
+private:
+    std::string path_;
+};
+
+} // namespace perf::ai
+```
+
+### 6. 诊断报告结构
+
+```cpp
+// ai/diagnosis/diagnosis_report.hpp
+#pragma once
+#include <string>
+#include <vector>
+#include <chrono>
+
+namespace perf::ai {
+
+// 瓶颈类型枚举
+enum class BottleneckType {
+    CPU_BOUND,
+    MEMORY_BOUND,
+    IO_BOUND,
+    NETWORK_BOUND,
+    GPU_BOUND,
+    LOCK_CONTENTION,
+    SCHEDULER,
+    UNKNOWN
+};
+
+// 结构化诊断报告
+struct DiagnosisReport {
+    // 元信息
+    std::string session_id;
+    std::chrono::system_clock::time_point start_time;
+    std::chrono::system_clock::time_point end_time;
+    int tool_call_count{0};
+    int total_tokens_used{0};
+
+    // 诊断结果
+    std::string severity;              // "info" / "warning" / "critical"
+    BottleneckType bottleneck_type{BottleneckType::UNKNOWN};
+    float confidence{0.0f};           // 置信度 0.0-1.0
+    std::string root_cause;           // 根因描述（自然语言）
+    std::vector<std::string> evidence; // 支撑证据（数据点）
+    std::vector<std::string> recommendations; // 可执行优化建议
+
+    // 工具调用轨迹（可选，用于调试）
+    struct ToolCallRecord {
+        std::string tool_name;
+        std::string arguments;
+        std::string result_summary;
+        std::chrono::milliseconds duration;
+    };
+    std::vector<ToolCallRecord> tool_call_trace;
+
+    // 序列化为JSON
+    std::string toJson() const;
+    // 序列化为Markdown报告
+    std::string toMarkdown() const;
+};
+
+} // namespace perf::ai
+```
+
+---
+
+## ⚙️ 配置管理系统
+
+```cpp
+// config/config_manager.hpp
+#pragma once
+#include "common/result.hpp"
+#include <string>
+#include <functional>
+
+namespace perf::config {
+
+// 全局配置结构
+struct AgentConfig {
+    // 采集配置
+    struct Collector {
+        int sample_freq_hz{99};           // CPU采样频率
+        int metrics_interval_ms{1000};    // 指标采集周期
+        int metrics_history_minutes{60};  // 指标历史保留时长
+        bool enable_ebpf{true};
+        std::string ebpf_programs_dir{"/usr/share/ai-perf-agent/bpf"};
+    } collector;
+
+    // AI配置
+    struct AI {
+        std::string backend{"openai"};    // "openai" / "anthropic"
+        std::string api_key;             // 从环境变量读取优先
+        std::string model{"gpt-4o"};
+        int max_iterations{20};
+        int token_budget{100000};
+        float confidence_threshold{0.85f};
+    } ai;
+
+    // 告警配置
+    struct Alert {
+        bool enabled{true};
+        bool auto_analyze_on_high{true};
+        std::string notification_webhook;  // 可选Webhook URL
+        std::string notification_file;     // 可选文件输出路径
+        // 默认告警阈值
+        float cpu_threshold_pct{90.0f};
+        float memory_threshold_pct{85.0f};
+        float io_latency_threshold_ms{100.0f};
+    } alert;
+
+    // 外部工具配置
+    struct ExternalTools {
+        bool enable_perf{true};
+        bool enable_ncu{true};
+        bool enable_nsys{true};
+        bool enable_vtune{false};
+    } external_tools;
+};
+
+class ConfigManager {
+public:
+    // 从YAML文件加载配置
+    static common::Result<AgentConfig> loadFromFile(const std::string& path);
+
+    // 从环境变量覆盖（AI_PERF_API_KEY等）
+    static void applyEnvOverrides(AgentConfig& config);
+
+    // 热重载：监听文件变化，调用回调
+    void watchForChanges(
+        const std::string& config_path,
+        std::function<void(const AgentConfig&)> on_change
+    );
+
+    void stopWatching();
+
+private:
+    class Impl;
+    std::unique_ptr<Impl> pimpl_;
+};
+
+} // namespace perf::config
+```
+
+**配置文件示例 (`agent.yaml`)：**
+
+```yaml
+collector:
+  sample_freq_hz: 99
+  metrics_interval_ms: 1000
+  metrics_history_minutes: 60
+  enable_ebpf: true
+
+ai:
+  backend: openai          # openai / anthropic
+  model: gpt-4o
+  # api_key: 优先从环境变量 AI_PERF_OPENAI_API_KEY 读取
+  max_iterations: 20
+  token_budget: 100000
+  confidence_threshold: 0.85
+
+alert:
+  enabled: true
+  auto_analyze_on_high: true
+  notification_webhook: "https://hooks.slack.com/services/xxx"
+  cpu_threshold_pct: 90.0
+  memory_threshold_pct: 85.0
+
+external_tools:
+  enable_perf: true
+  enable_ncu: true   # 如果有NVIDIA GPU
+  enable_nsys: true
+  enable_vtune: false
+```
+
+---
+
+## 🐳 容器与cgroup v2支持
+
+```cpp
+// collector/procfs/container_reader.hpp
+#pragma once
+#include "common/result.hpp"
+#include <string>
+#include <optional>
+
+namespace perf::collector {
+
+// 容器/cgroup感知的进程信息
+struct ContainerInfo {
+    std::string container_id;    // 短ID（12位十六进制）
+    std::string container_name;
+    std::string runtime;         // "docker" / "containerd" / "podman"
+    std::string pod_name;        // Kubernetes Pod名（如果有）
+    std::string namespace_name;  // Kubernetes namespace
+    std::string cgroup_path;     // /sys/fs/cgroup/...路径
+};
+
+// cgroup v2指标
+struct CgroupMetrics {
+    // CPU
+    double cpu_usage_usec{0};        // 累计CPU时间(微秒)
+    double cpu_throttled_usec{0};    // 被限流的时间
+    double cpu_throttle_pct{0.0};    // 限流比例
+
+    // 内存
+    uint64_t memory_current_bytes{0};
+    uint64_t memory_limit_bytes{0};   // 0表示无限制
+    uint64_t memory_peak_bytes{0};
+    bool oom_kill{false};
+
+    // I/O
+    uint64_t io_read_bytes{0};
+    uint64_t io_write_bytes{0};
+};
+
+class ContainerReader {
+public:
+    ContainerReader();
+
+    // 检测系统是否支持cgroup v2
+    static bool isCgroupV2Available();
+
+    // 通过PID获取容器信息（从/proc/[pid]/cgroup解析）
+    std::optional<ContainerInfo> getContainerForPid(pid_t pid);
+
+    // 读取cgroup v2指标
+    common::Result<CgroupMetrics> readCgroupMetrics(const std::string& cgroup_path);
+
+    // 获取所有运行中的容器
+    common::Result<std::vector<ContainerInfo>> listContainers(
+        const std::string& runtime = "docker"
+    );
+
+private:
+    // 解析 /proc/[pid]/cgroup 中的 cgroup v2 路径
+    std::optional<std::string> parseCgroupPath(pid_t pid);
+    // 读取 cgroup v2 统一层次结构文件
+    common::Result<std::string> readCgroupFile(
+        const std::string& cgroup_path,
+        const std::string& filename
+    );
+};
+
+} // namespace perf::collector
+```
+
+**容器感知的使用场景：**
+
+```
+用户问：分析容器 abc123 的性能
+
+AI Agent工具调用链：
+1. analyze_container("abc123")
+   → 读取 /sys/fs/cgroup/abc123/cpu.stat（限流情况）
+   → 读取 /sys/fs/cgroup/abc123/memory.current（内存压力）
+   → 关联PID列表
+
+2. list_processes(filter_cgroup="abc123")
+   → 仅显示该容器内的进程
+
+3. cpu_profile(pid=<容器内热点进程>)
+   → 针对该进程的火焰图
+
+4. get_hw_counters(pid=<容器内热点进程>)
+   → IPC / cache miss等
+
+5. generate_diagnosis_report(...)
+   → "容器被CPU限流了35%，主要热点在 func_X，建议调大 cpu_limit 或优化该函数"
+```
+
+---
 
 ### 语言特性使用建议
 
@@ -657,7 +1552,45 @@ private:
 ### 3. eBPF封装层
 
 ```cpp
-// collector/ebpf/ebpf_loader.hpp
+// collector/ebpf/ebpf_compat.hpp
+// 内核版本兼容层：运行时检测内核能力并选择最优实现
+#pragma once
+#include <string>
+#include <cstdint>
+
+namespace perf::collector {
+
+struct KernelCapabilities {
+    uint32_t kernel_version;         // 主.次.修订 打包为 major<<16|minor<<8|patch
+    bool has_btf{false};             // /sys/kernel/btf/vmlinux 存在
+    bool has_ring_buffer{false};     // BPF_MAP_TYPE_RINGBUF (5.8+)
+    bool has_fentry{false};          // fentry/fexit程序类型 (5.5+)
+    bool has_bpf_iter{false};        // BPF迭代器 (5.6+)
+    bool has_co_re{false};           // CO-RE支持（需要BTF）
+    bool has_perf_buffer{true};      // PERF_EVENT_ARRAY（较旧内核通用）
+};
+
+class EbpfCompat {
+public:
+    // 运行时检测内核能力（仅检测一次，结果缓存）
+    static const KernelCapabilities& detect();
+
+    // 根据能力选择最优数据传递方式
+    enum class DataChannel { RING_BUFFER, PERF_BUFFER, POLLING };
+    static DataChannel bestDataChannel();
+
+    // CO-RE是否可用（优先），否则fallback到BCC或静态编译
+    static bool useCore() { return detect().has_co_re; }
+
+    // 人类可读的版本字符串
+    static std::string kernelVersionString();
+
+private:
+    static KernelCapabilities capabilities_;
+    static bool detected_;
+};
+
+} // namespace perf::collector
 #pragma once
 #include <memory>
 #include <string>
@@ -1525,6 +2458,6 @@ endif()
 
 ---
 
-*架构设计版本：v1.0*  
-*外部工具集成模块：v0.1*  
-*最后更新：2026-02-16*
+*架构设计版本：v2.0*
+*新增：AI智能体完整设计、配置管理、容器感知、eBPF内核兼容层、高频数据SPSCChannel*
+*最后更新：2026-02-18*
